@@ -1,0 +1,445 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: 'Template to deploy Redshift and VPC with public and private subnet, and ingest data to Redshift'
+
+Resources:
+
+  ############# VPC, Private subnet, Public subnet ##################
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 172.16.0.0/16
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: false
+
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: 172.16.0.0/24
+      VpcId: !Ref VPC
+      AvailabilityZone: "us-west-2a"
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
+
+  PrivateSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: 172.16.2.0/24
+      VpcId: !Ref VPC
+      AvailabilityZone: "us-west-2a"
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet
+
+  NetworkAcl:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref VPC
+
+  InboundNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'False'
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId: !Ref NetworkAcl
+
+  OutboundNetworkAclEntry:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'True'
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId: !Ref NetworkAcl
+
+  NetworkAclPublicSubnet:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    DependsOn:
+    - InboundNetworkAclEntry
+    - OutboundNetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PublicSubnet
+
+  NetworkAclPrivateSubnet:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    DependsOn:
+    - InboundNetworkAclEntry
+    - OutboundNetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref NetworkAcl
+      SubnetId: !Ref PrivateSubnet
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+
+  InternetGatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId:
+        Ref: PublicSubnet
+
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public Route Table
+
+  PublicRouteTableSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private Route Table1
+
+  PrivateRouteTableSubnet:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnet
+
+  Route2InternetGateway:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PublicRouteTable
+      GatewayId: !Ref InternetGateway
+    DependsOn: 
+    - InternetGatewayAttachment
+    - PublicRouteTableSubnet
+
+  Route2NatGateway:
+    Type: 'AWS::EC2::Route'
+    DependsOn:
+    - PrivateRouteTableSubnet
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref PrivateRouteTable
+      NatGatewayId: !Ref NatGateway
+
+
+  ######### REDSHIFT : IAM role, cluster, security group, secret manager ##########
+  RedshiftAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - redshift.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  
+  AccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: RedshiftDbtAccessPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -  
+            Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:List*
+            Resource: 
+              - arn:aws:s3:::redshift-immersionday-labs/*
+              - arn:aws:s3:::redshift-immersionday-labs
+      Roles:
+        - !Ref RedshiftAccessRole  
+
+  RedshiftSubnetGroup:
+    Type: 'AWS::Redshift::ClusterSubnetGroup'
+    Properties:
+      Description: Redshift in private subnet
+      SubnetIds:
+        - !Ref PrivateSubnet
+
+  RedshiftSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for Redshift"
+      VpcId: !Ref VPC
+  
+  RedshiftSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: "redshift-creds"
+      Description: 'This is the secret for Redshift cluster'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "awsuser", "dbname": "dev"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludePunctuation: True
+
+  RedshiftCluster:
+    Type: 'AWS::Redshift::Cluster'
+    DependsOn: 
+    - InternetGatewayAttachment
+    - AccessPolicy
+    Properties:
+      PubliclyAccessible: False
+      ClusterType: 'single-node'
+      NodeType: 'dc2.large'
+      DBName: 'dev'
+      MasterUsername: 'awsuser'
+      MasterUserPassword: '{{resolve:secretsmanager:redshift-creds:SecretString:password}}'
+      Port: 5439
+      ClusterSubnetGroupName: !Ref RedshiftSubnetGroup
+      IamRoles: 
+        - !GetAtt RedshiftAccessRole.Arn
+      VpcSecurityGroupIds:
+        - !Ref RedshiftSecurityGroup
+
+  # Lambda to ingest data to Redshift
+  LambdaIngestFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+    - Route2InternetGateway
+    - Route2NatGateway
+    - NetworkAclPrivateSubnet
+    - NetworkAclPublicSubnet
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          import psycopg2
+          from psycopg2 import ProgrammingError
+          import boto3
+          import json
+          import cfnresponse
+
+          def get_redshift_creds():
+              print("get credentials")
+              client = boto3.client('secretsmanager', region_name='${AWS::Region}')
+              get_secret_value_response = client.get_secret_value(SecretId = "redshift-creds")
+              secret = get_secret_value_response['SecretString']
+              db_creds = json.loads(secret)
+              return db_creds["username"], db_creds["password"]
+
+          def create_conn(username, password):
+              print("get connection")
+              conn = psycopg2.connect(
+                      dbname="dev",
+                      user=username,
+                      password=password,
+                      port="5439",
+                      host="${RedshiftCluster.Endpoint.Address}")
+              conn.autocommit = True
+              return conn
+
+          def run_query(conn, query):
+              cursor = conn.cursor()
+              cursor.execute(query)
+              print("executed")
+
+          def lambda_handler(event, context):
+              print(event)
+              if event["RequestType"] == "Delete":
+                cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, {})
+                return
+
+              username, password = get_redshift_creds()
+              conn = create_conn(username, password)
+              run_query(conn, "DROP TABLE IF EXISTS public.orders CASCADE;")
+              run_query(conn, "DROP TABLE IF EXISTS public.customer CASCADE;")
+              run_query(conn, "DROP TABLE IF EXISTS public.nation CASCADE;")
+              run_query(conn, """
+                  CREATE TABLE public.nation (
+                    N_NATIONKEY bigint NOT NULL PRIMARY KEY,
+                    N_NAME varchar(25),
+                    N_REGIONKEY bigint,
+                    N_COMMENT varchar(152))
+                  diststyle all;
+              """)
+              run_query(conn, """
+                  create table public.customer (
+                    C_CUSTKEY bigint NOT NULL PRIMARY KEY,
+                    C_NAME varchar(25),
+                    C_ADDRESS varchar(40),
+                    C_NATIONKEY bigint REFERENCES nation(N_NATIONKEY),
+                    C_PHONE varchar(15),
+                    C_ACCTBAL decimal(18,4),
+                    C_MKTSEGMENT varchar(10),
+                    C_COMMENT varchar(117))
+                  diststyle all;
+              """)
+              run_query(conn, """
+                  create table public.orders (
+                    O_ORDERKEY bigint NOT NULL PRIMARY KEY,
+                    O_CUSTKEY bigint REFERENCES customer(C_CUSTKEY),
+                    O_ORDERSTATUS varchar(1),
+                    O_TOTALPRICE decimal(18,4),
+                    O_ORDERDATE Date,
+                    O_ORDERPRIORITY varchar(15),
+                    O_CLERK varchar(15),
+                    O_SHIPPRIORITY Integer,
+                    O_COMMENT varchar(79))
+                  distkey (O_ORDERKEY)
+                  sortkey (O_ORDERDATE);
+              """)
+              run_query(conn, """
+                  COPY public.nation FROM 's3://redshift-immersionday-labs/data/nation/nation.tbl.'
+                  iam_role '${RedshiftAccessRole.Arn}'
+                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+              """)
+              run_query(conn, """
+                  copy public.customer from 's3://redshift-immersionday-labs/data/customer/customer.tbl.'
+                  iam_role '${RedshiftAccessRole.Arn}'
+                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+              """)
+              run_query(conn, """
+                  copy public.orders from 's3://redshift-immersionday-labs/data/orders/orders.tbl.'
+                  iam_role '${RedshiftAccessRole.Arn}'
+                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+              """)
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, {})
+
+      Handler: "index.lambda_handler"
+      Timeout: 900
+      Role:
+        Fn::GetAtt:
+          - LambdaIngestFunctionRole
+          - Arn
+      Runtime: python3.7
+      Layers:
+        - !Ref LambdaLayer
+      VpcConfig: 
+        SubnetIds: 
+          - !Ref PrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+
+  LambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties: 
+      CompatibleRuntimes: 
+        - python3.7
+      Content: 
+        S3Bucket: aws-big-data-blog
+        S3Key: automate-redshift-etl-dbt/python_libs.zip
+      Description: Package for redshift connection
+      LayerName: RedshiftUtil
+      LicenseInfo: MIT
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Security Group for Lambda function
+      VpcId:
+        Ref: VPC
+
+  LambdaToRedshiftSgRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties: 
+      Description: Access from AWS Batch for DBT
+      GroupId: !Ref RedshiftSecurityGroup 
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      FromPort: 5439
+      ToPort: 5439
+
+  LambdaIngestFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  LambdaAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: LambdaDbtAccessPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - "secretsmanager:GetResourcePolicy"
+              - "secretsmanager:GetSecretValue"
+              - "secretsmanager:DescribeSecret"
+            Resource:
+              - !Ref RedshiftSecret
+      Roles:
+        - !Ref LambdaIngestFunctionRole  
+
+  RedshiftDataIngestion:
+    Type: Custom::RedshiftDataIngestion
+    Properties:
+      ServiceToken: !GetAtt LambdaIngestFunction.Arn
+
+Outputs:
+  VPC:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPC"
+  PrivateSubnet:
+    Description: Private subnet ID
+    Value: !Ref PrivateSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet"
+  PublicSubnet:
+    Description: Public subnet ID
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnet"
+  RedshiftIamRole:
+    Description: Name of IAM Role used by Reshift cluster
+    Value: !GetAtt RedshiftAccessRole.Arn
+  RedshiftClusterName:
+    Description: Name of Redshift cluster
+    Value: !Ref RedshiftCluster
+  RedshiftSecurityGroup:
+    Description: Security group of Redshift cluster
+    Value: !Ref RedshiftSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-RedshiftSecurityGroup"
+  RedshiftClusterEndpoint:
+    Description: Redshift cluster endpoint
+    Value: !Sub "${RedshiftCluster.Endpoint.Address}"
+    Export:
+      Name: !Sub "${AWS::StackName}-RedshiftClusterEndpoint"
+
