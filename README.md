@@ -1,11 +1,8 @@
-## My Project
 
-TODO: Fill this README out!
 
-Be sure to:
+## Automate deployment of Amazon Redshift ETL jobs with CodeBuild, AWS Batch, and DBT
 
-* Change the title in this README
-* Edit your repository description on GitHub
+Code to accompany AWS blog "Automate deployment of Amazon Redshift ETL jobs with CodeBuild, AWS Batch, and DBT"
 
 ## Security
 
