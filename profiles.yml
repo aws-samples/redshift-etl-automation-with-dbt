@@ -1,0 +1,12 @@
+default:
+  outputs:
+    default:
+      type: redshift
+      threads: 1
+      host: <placeholder>
+      port: 5439
+      user: <placeholder>
+      pass: <placeholder>
+      dbname: dev
+      schema: <placeholder>
+      sslmode: require

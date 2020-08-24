@@ -1,0 +1,5 @@
+packages:
+  - package: fishtown-analytics/dbt_utils
+    version: ">=0.1.25"
+  - package: fishtown-analytics/redshift
+    version: 0.2.2

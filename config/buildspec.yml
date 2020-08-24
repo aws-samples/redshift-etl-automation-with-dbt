@@ -1,0 +1,37 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+version: 0.2
+env:
+  secrets-manager:
+    REDSHIFT_USER: $REDSHIFT_USER_SECRET
+    REDSHIFT_PASSWORD: $REDSHIFT_PASSWORD_SECRET
+phases:
+  install:
+    runtime-versions:
+      python: 3.7
+  pre_build:
+    commands:
+      - aws --version
+      - echo 'region - ' - $AWS_DEFAULT_REGION
+      - echo 'repository - ' $REPOSITORY_URI
+      - cd src/dbt-project/
+      - sed -i -e "s/\(host:\).*/\1 $REDSHIFT_HOST/" profiles.yml
+      - sed -i -e "s/\(user:\).*/\1 $REDSHIFT_USER/" profiles.yml
+      - sed -i -e "s/\(pass:\).*/\1 $REDSHIFT_PASSWORD/" profiles.yml
+      - sed -i -e "s/\(schema:\).*/\1 $SCHEMA/" profiles.yml
+      - cat profiles.yml
+      - cd ../
+      - echo Logging in to Amazon ECR
+      - $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $REPOSITORY_URI .
+      - docker tag $REPOSITORY_URI $REPOSITORY_URI
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Push the latest Docker Image...
+      - docker push $REPOSITORY_URI

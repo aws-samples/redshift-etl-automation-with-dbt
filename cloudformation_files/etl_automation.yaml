@@ -1,0 +1,393 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Template to deploy Redshift ETL automation with DBT'
+
+Parameters:
+  GithubRepoUrl:
+    Type: String
+    Default: ''
+    Description: Enter the github repository url of your DBT project e.g. https://github.com/myuser/dbt-batch.git
+  GithubToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Enter your github token 
+  MonitoringEmail:
+    Type: String
+    Default: ''
+    Description: Email address that will receive monitoring alerts
+  JobFrequency:
+    Type: String
+    Default: 0 4 * * ? *
+    Description: Frequency of the DBT job in CRON format. Time will be in UTC timezone. For example, "0 4 * * ? *" (without quotes) will run the job everyday at 4:00 UTC.
+  RedshiftStackName:
+    Type: String
+    Description: Name of cloudformation stack where you deployed Redshift cluster
+  RedshiftSchema:
+    Type: String
+    Default: 'public'
+    Description: Name of Redshift schema with your data
+  GithubType:
+    Type: String
+    Default: 'GITHUB'
+    AllowedValues:
+      - GITHUB
+      - GITHUB_ENTERPRISE
+    Description: Whether you are using regular GitHub (i.e. github.com) or GitHub Enterprise from your company.
+
+
+Resources:
+
+  # AWS BATCH
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EC2 Security Group for instances launched in the VPC by Batch
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${RedshiftStackName}-VPC"
+
+  BatchToRedshiftSgRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties: 
+      Description: Access from AWS Batch to Redshift
+      GroupId:
+        Fn::ImportValue:
+          !Sub "${RedshiftStackName}-RedshiftSecurityGroup"
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref SecurityGroup
+      FromPort: 5439
+      ToPort: 5439
+    
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+
+  IamInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - Ref: EcsInstanceRole
+
+  EcsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  BatchProcessingJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      Type: container
+      JobDefinitionName: 'BatchJobDefinition'
+      ContainerProperties:
+        Image:
+          Fn::Join:
+            - ''
+            - - Ref: AWS::AccountId
+              - .dkr.ecr.
+              - Ref: AWS::Region
+              - ".amazonaws.com/dbt-batch-processing-job-repository:latest"
+        Vcpus: 2
+        Memory: 2000
+        Command:
+          - dbt
+          - run
+          - --profiles-dir
+          - .
+      RetryStrategy:
+        Attempts: 1
+
+  BatchProcessingJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: 'BatchProcessingJobQueue'
+      Priority: 1
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment:
+            Ref: ComputeEnvironment
+
+  ComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !Ref BatchServiceRole
+      ComputeResources:
+        Type: EC2
+        MinvCpus: 0
+        DesiredvCpus: 0
+        MaxvCpus: 32
+        InstanceTypes:
+          - optimal
+        Subnets:
+          - Fn::ImportValue:
+              !Sub "${RedshiftStackName}-PublicSubnet"
+        SecurityGroupIds:
+          - Ref: SecurityGroup
+        InstanceRole:
+          Ref: IamInstanceProfile
+
+  ### Email notification
+  AWSBatchEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Events Rule for AWS Batch
+      EventPattern:
+        source:
+          - aws.batch
+        detail-type:
+          - Batch Job State Change
+        detail:
+          status:
+            - "FAILED"
+      State: ENABLED
+      Targets:
+        - Arn:
+            Ref: ErrorsTopic
+          Id: cloudwatch-batch-eventrules
+          InputTransformer:
+            InputPathsMap:
+              logStream: "$.detail.container.logStreamName"
+              time: "$.time"
+            InputTemplate: "\"Your ETL Batch job has failed at <time>. Please check the logs at https://console.aws.amazon.com/cloudwatch/home?#logEventViewer:group=/aws/batch/job;stream=<logStream> (ensure you are logged into the correct AWS account before clicking the link).\""
+
+  ErrorsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint:
+            Ref: MonitoringEmail
+          Protocol: "email"
+      TopicName: 'BatchProcessingErrorsTopic'
+
+
+  #CronJob as EventRule to invoke AWS batch
+  CronjobEvent:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: 'CloudWatch Event that triggers AWS BATCH'
+      ScheduleExpression: !Sub cron(${JobFrequency}) #Run at 1 pm UTC every 2,9,16,23 days of the month
+      State: ENABLED
+      RoleArn: !GetAtt CloudWatchRole.Arn
+      Targets:
+        - Arn: !Ref BatchProcessingJobQueue
+          Id: AWSBatchCronjob
+          RoleArn: !GetAtt CloudWatchRole.Arn
+          BatchParameters:
+              JobDefinition: !Ref BatchProcessingJobDefinition
+              JobName: 'redshift-etl-job'
+
+  #Permission to CWEvents invoke the AWS batch
+  CloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+  
+  CloudWatchBatchPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: CloudWatchDbtBatchPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -  
+            Effect: Allow
+            Action:
+              - batch:SubmitJob
+            Resource:
+              - !Ref BatchProcessingJobDefinition
+              - !Ref BatchProcessingJobQueue
+      Roles:
+        - !Ref CloudWatchRole  
+
+  #Github creds
+  GithubSecret:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: 'github-creds'
+      Description: Contains Github personal token
+      SecretString: !Sub '{"token": "${GithubToken}"}'
+
+  #Code Build
+  GithubCreds:
+    Type: 'AWS::CodeBuild::SourceCredential'
+    DependsOn:
+      - GithubSecret
+    Properties:
+      Token: '{{resolve:secretsmanager:github-creds:SecretString:token}}'
+      ServerType: !Ref GithubType
+      AuthType: PERSONAL_ACCESS_TOKEN
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: GithubCreds
+    Properties:
+      Name: dbt-batch-processing-job-build
+      Description: DBT batch processing codebuild project.
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        Type: 'NO_ARTIFACTS'
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:1.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: REPOSITORY_URI
+            Type: PLAINTEXT
+            Value:
+              Fn::Join:
+                - ''
+                - - Ref: AWS::AccountId
+                  - .dkr.ecr.
+                  - Ref: AWS::Region
+                  - ".amazonaws.com/dbt-batch-processing-job-repository:latest"
+          - Name: REDSHIFT_USER_SECRET
+            Type: PLAINTEXT
+            Value: 'redshift-creds:username'
+          - Name: REDSHIFT_PASSWORD_SECRET
+            Type: PLAINTEXT
+            Value: 'redshift-creds:password'
+          - Name: REDSHIFT_HOST
+            Type: PLAINTEXT
+            Value:
+              Fn::ImportValue:
+                !Sub "${RedshiftStackName}-RedshiftClusterEndpoint"
+          - Name: SCHEMA
+            Type: PLAINTEXT
+            Value:
+              Ref: RedshiftSchema
+          - Name: AWS_DEFAULT_REGION
+            Type: PLAINTEXT
+            Value:
+              Ref: AWS::Region
+      Source:
+        BuildSpec: config/buildspec.yml
+        Location:
+          Ref: GithubRepoUrl
+        Type: !Ref GithubType
+      SourceVersion: refs/heads/master
+      TimeoutInMinutes: 10
+      Triggers:
+        Webhook: true
+        FilterGroups:
+          - - Type: EVENT
+              Pattern: PUSH
+
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: ['sts:AssumeRole']
+            Effect: Allow
+            Principal:
+              Service: [codebuild.amazonaws.com]
+        Version: '2012-10-17'
+      Path: /
+
+  CodeBuildAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: CodeBuildDbtPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              -  "logs:PutLogEvents"
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - 'secretsmanager:DescribeSecret'
+              - 'secretsmanager:GetSecretValue'
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:redshift-creds*'
+              - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:github-creds*'
+      Roles:
+        - !Ref CodeBuildRole  
+
+
+  # CloudWatchEvents Code build Role
+  CloudWatchEventsCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+
+  CloudWatchBuildAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: CloudWatchDbtBuildAccessPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'codebuild:StartBuild'
+            Resource: !GetAtt CodeBuildProject.Arn
+      Roles:
+        - !Ref CloudWatchEventsCodeBuildRole  
+
+  #ECR Repository
+  BatchProcessRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: "dbt-batch-processing-job-repository"
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowPushPull
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub arn:aws:iam::${AWS::AccountId}:role/${EcsInstanceRole}
+            Action:
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+
