@@ -21,7 +21,7 @@ Resources:
     Properties:
       CidrBlock: 172.16.0.0/24
       VpcId: !Ref VPC
-      AvailabilityZone: "us-west-2a"
+      AvailabilityZone: "us-east-1a"
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -32,7 +32,7 @@ Resources:
     Properties:
       CidrBlock: 172.16.2.0/24
       VpcId: !Ref VPC
-      AvailabilityZone: "us-west-2a"
+      AvailabilityZone: "us-east-1a"
       Tags:
         - Key: Name
           Value: PrivateSubnet
@@ -177,8 +177,8 @@ Resources:
               - s3:Get*
               - s3:List*
             Resource: 
-              - arn:aws:s3:::redshift-immersionday-labs/*
-              - arn:aws:s3:::redshift-immersionday-labs
+              - arn:aws:s3:::aws-bigdata-blog/artifacts/automate-redshift-etl-dbt/*
+              - arn:aws:s3:::aws-bigdata-blog
       Roles:
         - !Ref RedshiftAccessRole  
 
@@ -312,19 +312,19 @@ Resources:
                   sortkey (O_ORDERDATE);
               """)
               run_query(conn, """
-                  COPY public.nation FROM 's3://redshift-immersionday-labs/data/nation/nation.tbl.'
+                  COPY public.nation FROM 's3://aws-bigdata-blog/artifacts/automate-redshift-etl-dbt/sample_data/nation/nation.tbl.'
                   iam_role '${RedshiftAccessRole.Arn}'
-                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+                  region 'us-east-1' lzop delimiter '|' COMPUPDATE PRESET;
               """)
               run_query(conn, """
-                  copy public.customer from 's3://redshift-immersionday-labs/data/customer/customer.tbl.'
+                  copy public.customer from 's3://aws-bigdata-blog/artifacts/automate-redshift-etl-dbt/sample_data/customer/customer.tbl.'
                   iam_role '${RedshiftAccessRole.Arn}'
-                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+                  region 'us-east-1' lzop delimiter '|' COMPUPDATE PRESET;
               """)
               run_query(conn, """
-                  copy public.orders from 's3://redshift-immersionday-labs/data/orders/orders.tbl.'
+                  copy public.orders from 's3://aws-bigdata-blog/artifacts/automate-redshift-etl-dbt/sample_data/orders/orders.tbl.'
                   iam_role '${RedshiftAccessRole.Arn}'
-                  region 'us-west-2' lzop delimiter '|' COMPUPDATE PRESET;
+                  region 'us-east-1' lzop delimiter '|' COMPUPDATE PRESET;
               """)
               cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, {})
 
@@ -349,8 +349,8 @@ Resources:
       CompatibleRuntimes: 
         - python3.7
       Content: 
-        S3Bucket: aws-big-data-blog
-        S3Key: automate-redshift-etl-dbt/python_libs.zip
+        S3Bucket: aws-bigdata-blog
+        S3Key: artifacts/automate-redshift-etl-dbt/python_libs.zip
       Description: Package for redshift connection
       LayerName: RedshiftUtil
       LicenseInfo: MIT
