@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-FROM python
+FROM python:3.8-slim-buster
 
 ADD dbt-project /dbt-project
 
