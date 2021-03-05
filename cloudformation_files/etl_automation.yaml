@@ -181,6 +181,18 @@ Resources:
           Protocol: "email"
       TopicName: 'BatchProcessingErrorsTopic'
 
+  ErrorsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: '*'
+      Topics:
+        - !Ref ErrorsTopic
 
   #CronJob as EventRule to invoke AWS batch
   CronjobEvent:
