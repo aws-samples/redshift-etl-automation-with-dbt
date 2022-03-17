@@ -180,6 +180,7 @@ Resources:
             Ref: MonitoringEmail
           Protocol: "email"
       TopicName: 'BatchProcessingErrorsTopic'
+      KmsMasterKeyId: "alias/aws/sns"
 
   ErrorsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
