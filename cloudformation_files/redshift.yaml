@@ -206,6 +206,40 @@ Resources:
         PasswordLength: 16
         ExcludePunctuation: True
 
+  kmsKey:
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: Key for encrypting Redshift
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                'Fn::Sub': 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 'kms:CancelKeyDeletion'
+              - 'kms:Create*'
+              - 'kms:Delete*'
+              - 'kms:Describe*'
+              - 'kms:Disable*'
+              - 'kms:Enable*'
+              - 'kms:Get*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Revoke*'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:TagResource'
+              - 'kms:Update*'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+            Resource: '*'
+
   RedshiftCluster:
     Type: 'AWS::Redshift::Cluster'
     DependsOn: 
@@ -224,6 +258,8 @@ Resources:
         - !GetAtt RedshiftAccessRole.Arn
       VpcSecurityGroupIds:
         - !Ref RedshiftSecurityGroup
+      Encrypted: True
+      KmsKeyId: !Ref kmsKey
 
   # Lambda to ingest data to Redshift
   LambdaIngestFunction:
@@ -442,4 +478,3 @@ Outputs:
     Value: !Sub "${RedshiftCluster.Endpoint.Address}"
     Export:
       Name: !Sub "${AWS::StackName}-RedshiftClusterEndpoint"
-
