@@ -16,7 +16,7 @@ phases:
       - echo 'region - ' - $AWS_DEFAULT_REGION
       - echo 'repository - ' $REPOSITORY_URI
       - cd src/dbt-project/
-      - sed -i -e "s/\(host:\).*/\1 $REDSHIFT_HOST/" profiles.yml
+      - sed -i -e "s@\(host:\).*@\1 $REDSHIFT_HOST@" profiles.yml
       - sed -i -e "s/\(user:\).*/\1 $REDSHIFT_USER/" profiles.yml
       - sed -i -e "s/\(pass:\).*/\1 $REDSHIFT_PASSWORD/" profiles.yml
       - sed -i -e "s/\(schema:\).*/\1 $SCHEMA/" profiles.yml
