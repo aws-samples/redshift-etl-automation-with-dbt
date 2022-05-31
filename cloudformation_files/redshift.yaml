@@ -21,7 +21,9 @@ Resources:
     Properties:
       CidrBlock: 172.16.0.0/24
       VpcId: !Ref VPC
-      AvailabilityZone: "us-east-1a"
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref 'AWS::Region'
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -32,7 +34,9 @@ Resources:
     Properties:
       CidrBlock: 172.16.2.0/24
       VpcId: !Ref VPC
-      AvailabilityZone: "us-east-1a"
+      AvailabilityZone: !Select
+        - 0
+        - Fn::GetAZs: !Ref 'AWS::Region'
       Tags:
         - Key: Name
           Value: PrivateSubnet
