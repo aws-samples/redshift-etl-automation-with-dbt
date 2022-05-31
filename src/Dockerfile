@@ -1,20 +1,21 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-FROM python:3.8-slim-buster
+FROM public.ecr.aws/lambda/python:3.8
+
+ENTRYPOINT ["/bin/bash", "-l", "-c"]
 
 ADD dbt-project /dbt-project
 
 # Update and install system packages
-RUN apt-get update -y && \
-  apt-get install --no-install-recommends -y -q \
-  git libpq-dev python-dev && \
-  apt-get clean && \
-  rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+RUN yum update kernel -y
+RUN yum update -y
+RUN pip install -U pip
 
 # Install DBT
-RUN pip install -U pip
-RUN pip install dbt
+RUN pip install --no-cache-dir dbt-core
+RUN pip install --no-cache-dir dbt-redshift
 
 WORKDIR /dbt-project
+RUN dbt deps --profiles-dir .
 
