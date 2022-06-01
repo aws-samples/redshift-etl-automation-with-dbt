@@ -152,8 +152,8 @@ Resources:
             Value: 1024
           - Type: VCPU
             Value: 0.5
-        JobRoleArn: !Ref EcsInstanceRole
-        ExecutionRoleArn: !Ref EcsInstanceRole
+        JobRoleArn: !GetAtt EcsInstanceRole.Arn
+        ExecutionRoleArn: !GetAtt EcsInstanceRole.Arn
         Command:
           - dbt
           - run
