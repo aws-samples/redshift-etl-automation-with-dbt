@@ -7,8 +7,8 @@ echo "computeEnvironment: $AWS_BATCH_CE_NAME"
 
 if [ $# -eq 0 ]; then
     echo "No models were specified. Executing all models"
-    dbt --debug run --profiles-dir .
+    dbt run --profiles-dir .
 else
     echo "Executing only specified models"
-    dbt --debug run --profiles-dir . -m $@
+    dbt run --profiles-dir . -m $@
 fi
