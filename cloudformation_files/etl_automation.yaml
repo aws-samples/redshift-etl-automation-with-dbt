@@ -127,10 +127,24 @@ Resources:
           - Sid: ''
             Effect: Allow
             Principal:
-              Service: ec2.amazonaws.com
+              Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - !Ref ECSAccessPolicy
+
+  ECSAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ECSDbtPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey*'
+            Resource: !GetAtt kmsKey.Arn
 
   BatchProcessingJobDefinition:
     Type: AWS::Batch::JobDefinition
@@ -155,10 +169,9 @@ Resources:
         JobRoleArn: !GetAtt EcsInstanceRole.Arn
         ExecutionRoleArn: !GetAtt EcsInstanceRole.Arn
         Command:
-          - dbt
-          - run
-          - --profiles-dir
-          - .
+          - ./run-dbt.sh
+        NetworkConfiguration:
+          AssignPublicIp: ENABLED
       RetryStrategy:
         Attempts: 1
 

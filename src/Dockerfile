@@ -17,5 +17,6 @@ RUN pip install --no-cache-dir dbt-core
 RUN pip install --no-cache-dir dbt-redshift
 
 WORKDIR /dbt-project
+RUN chmod +x run-dbt.sh
 RUN dbt deps --profiles-dir .
 
