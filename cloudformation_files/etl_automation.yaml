@@ -41,6 +41,49 @@ Parameters:
 
 Resources:
 
+  kmsKey:
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: Key for encrypting resources on ETL automation
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                'Fn::Sub': 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - 'kms:CancelKeyDeletion'
+              - 'kms:Create*'
+              - 'kms:Delete*'
+              - 'kms:Describe*'
+              - 'kms:Disable*'
+              - 'kms:Enable*'
+              - 'kms:Get*'
+              - 'kms:List*'
+              - 'kms:Put*'
+              - 'kms:Revoke*'
+              - 'kms:ScheduleKeyDeletion'
+              - 'kms:TagResource'
+              - 'kms:Update*'
+              - 'kms:Encrypt'
+              - 'kms:Decrypt'
+              - 'kms:ReEncrypt*'
+              - 'kms:GenerateDataKey*'
+            Resource: '*'
+
+  kmsAlias:
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub 'alias/${AWS::StackName}-dbt-redshift-etl'
+      TargetKeyId:
+        Ref: kmsKey
+
   # AWS BATCH
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -75,12 +118,6 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
 
-  IamInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles:
-        - Ref: EcsInstanceRole
-
   EcsInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -90,16 +127,32 @@ Resources:
           - Sid: ''
             Effect: Allow
             Principal:
-              Service: ec2.amazonaws.com
+              Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - !Ref ECSAccessPolicy
+
+  ECSAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ECSDbtPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey*'
+            Resource: !GetAtt kmsKey.Arn
 
   BatchProcessingJobDefinition:
     Type: AWS::Batch::JobDefinition
     Properties:
       Type: container
       JobDefinitionName: 'BatchJobDefinition'
+      PlatformCapabilities:
+        - FARGATE
       ContainerProperties:
         Image:
           Fn::Join:
@@ -108,13 +161,17 @@ Resources:
               - .dkr.ecr.
               - Ref: AWS::Region
               - ".amazonaws.com/dbt-batch-processing-job-repository:latest"
-        Vcpus: 2
-        Memory: 2000
+        ResourceRequirements:
+          - Type: MEMORY
+            Value: 1024
+          - Type: VCPU
+            Value: 0.5
+        JobRoleArn: !GetAtt EcsInstanceRole.Arn
+        ExecutionRoleArn: !GetAtt EcsInstanceRole.Arn
         Command:
-          - dbt
-          - run
-          - --profiles-dir
-          - .
+          - ./run-dbt.sh
+        NetworkConfiguration:
+          AssignPublicIp: ENABLED
       RetryStrategy:
         Attempts: 1
 
@@ -132,21 +189,16 @@ Resources:
     Type: AWS::Batch::ComputeEnvironment
     Properties:
       Type: MANAGED
-      ServiceRole: !Ref BatchServiceRole
       ComputeResources:
-        Type: EC2
-        MinvCpus: 0
-        DesiredvCpus: 0
+        Type: FARGATE
         MaxvCpus: 32
-        InstanceTypes:
-          - optimal
         Subnets:
           - Fn::ImportValue:
               !Sub "${RedshiftStackName}-PublicSubnet"
         SecurityGroupIds:
           - Ref: SecurityGroup
-        InstanceRole:
-          Ref: IamInstanceProfile
+      ServiceRole:
+        Fn::GetAtt: [ BatchServiceRole, Arn ]
 
   ### Email notification
   AWSBatchEventsRule:
@@ -180,6 +232,7 @@ Resources:
             Ref: MonitoringEmail
           Protocol: "email"
       TopicName: 'BatchProcessingErrorsTopic'
+      KmsMasterKeyId: !Ref kmsKey
 
   ErrorsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
@@ -272,7 +325,7 @@ Resources:
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: aws/codebuild/amazonlinux2-x86_64-standard:1.0
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
         PrivilegedMode: true
         EnvironmentVariables:
           - Name: REPOSITORY_URI
@@ -338,11 +391,26 @@ Resources:
         Version: 2012-10-17
         Statement:
           - Action:
-              - "logs:CreateLogGroup"
-              - "logs:CreateLogStream"
-              -  "logs:PutLogEvents"
+            - 'ec2:DescribeNetworkInterfaces'
+            - 'ec2:DescribeSubnets'
+            - 'ec2:DescribeSecurityGroups'
+            - 'ec2:DescribeDhcpOptions'
+            - 'ec2:DescribeVpcs'
             Effect: Allow
             Resource: '*'
+          - Action:
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:CreateNetworkInterfacePermission'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
+          - Action:
+              - 'logs:DescribeLogGroups'
+              - 'logs:PutLogEvents'
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/dbt-batch-processing-job-build:*'
           - Action:
               - 'secretsmanager:DescribeSecret'
               - 'secretsmanager:GetSecretValue'
@@ -350,6 +418,11 @@ Resources:
             Resource:
               - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:redshift-creds*'
               - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:github-creds*'
+          - Effect: Allow
+            Action:
+              - 'kms:Decrypt'
+              - 'kms:GenerateDataKey*'
+            Resource: !GetAtt kmsKey.Arn
       Roles:
         - !Ref CodeBuildRole  
 
@@ -386,6 +459,28 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: "dbt-batch-processing-job-repository"
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+          ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !Ref kmsKey
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+                "rulePriority": 1,
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 2
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
       RepositoryPolicyText:
         Version: "2012-10-17"
         Statement:
