@@ -9,16 +9,16 @@ Parameters:
   GithubRepoUrl:
     Type: String
     Default: ''
-    Description: Enter the github repository url of your DBT project e.g. https://github.com/myuser/dbt-batch.git
+    Description: git@github.com:producthunt/dbt_projects.git
   GithubToken:
     Type: String
     Default: ''
     NoEcho: true
-    Description: Enter your github token 
+    Description: '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'
   MonitoringEmail:
     Type: String
     Default: ''
-    Description: Email address that will receive monitoring alerts
+    Description: 'peggy@producthunt.co'
   JobFrequency:
     Type: String
     Default: 0 4 * * ? *
@@ -28,14 +28,13 @@ Parameters:
     Description: Name of cloudformation stack where you deployed Redshift cluster
   RedshiftSchema:
     Type: String
-    Default: 'public'
+    Default: 'analytics'
     Description: Name of Redshift schema with your data
   GithubType:
     Type: String
     Default: 'GITHUB'
     AllowedValues:
       - GITHUB
-      - GITHUB_ENTERPRISE
     Description: Whether you are using regular GitHub (i.e. github.com) or GitHub Enterprise from your company.
 
 
